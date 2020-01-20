@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 
 #include <linux/proc_fs.h>
+#include <linux/uaccess.h>
 
 #ifndef USB_VENDOR_ID_SAITEK
 #  define USB_VENDOR_ID_SAITEK 0x06a3
@@ -26,21 +27,52 @@
 #  define USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL 0x0d06
 #endif
 
+#define MAX_BUFFER 8
+
 struct proflight {
         int initialized;
         __u32 product_id;
         const char *proc_name;
         struct proc_dir_entry *proflight_dir_entry;
+        char buffer[MAX_BUFFER];
 };
 
 static ssize_t saitek_proc_read(struct file *f, char __user *buf, size_t count, loff_t *offset)
 {
-        return count; // TODO
+        struct proflight *data;
+
+        if (*offset >= MAX_BUFFER)
+                return 0;
+        data = PDE_DATA(file_inode(f));
+        if (!data) {
+                printk(KERN_ERR "Cannot find Saitek ProFlight device writer data.\n");
+                return -EIO;
+        }
+        if (*offset + count >= MAX_BUFFER)
+                count = MAX_BUFFER - *offset;
+        copy_to_user(buf, data->buffer, count);
+        *offset += count;
+
+        return count;
 }
 
 static ssize_t saitek_proc_write(struct file *f, const char __user *buf, size_t count, loff_t *offset)
 {
-        return count; // TODO
+        struct proflight *data;
+
+        if (*offset >= MAX_BUFFER)
+                return 0;
+        data = PDE_DATA(file_inode(f));
+        if (!data) {
+                printk(KERN_ERR "Cannot find Saitek ProFlight device reader data.\n");
+                return -EIO;
+        }
+        if (*offset + count >= MAX_BUFFER)
+                count = MAX_BUFFER - *offset;
+        copy_from_user(data->buffer, buf, count);
+        *offset += count;
+
+        return count;
 }
 
 static const struct file_operations saitek_proc_fops = {
@@ -78,7 +110,7 @@ static int saitek_proflight_probe(struct hid_device *hdev, const struct hid_devi
         driver_data->proc_name = proc_name(id->product);
 
         driver_data->proflight_dir_entry = proc_create_data(driver_data->proc_name,
-                        0x0666, NULL, &saitek_proc_fops, driver_data);
+                        0666, NULL, &saitek_proc_fops, driver_data);
         if (!driver_data->proflight_dir_entry) {
                 hid_err(hdev, "Cannot create '/proc/%s' entry.\n", driver_data->proc_name);
                 res = -EIO;
