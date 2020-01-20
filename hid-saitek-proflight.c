@@ -61,7 +61,7 @@ static ssize_t saitek_proc_write(struct file *f, const char __user *buf, size_t 
         struct proflight *data;
 
         if (*offset >= MAX_BUFFER)
-                return 0;
+                return EFBIG;
         data = PDE_DATA(file_inode(f));
         if (!data) {
                 printk(KERN_ERR "Cannot find Saitek ProFlight device reader data.\n");
