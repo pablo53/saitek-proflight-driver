@@ -44,6 +44,15 @@
 #define PANEL_DIGIT_DOT   0xd0
 #define PANEL_DIGIT_NULL  0xff
 
+#define MULTIPANEL_LIGHT_AP  0x01
+#define MULTIPANEL_LIGHT_HDG 0x02
+#define MULTIPANEL_LIGHT_NAV 0x04
+#define MULTIPANEL_LIGHT_IAS 0x08
+#define MULTIPANEL_LIGHT_ALT 0x10
+#define MULTIPANEL_LIGHT_VS  0x20
+#define MULTIPANEL_LIGHT_APR 0x40
+#define MULTIPANEL_LIGHT_REV 0x80
+
 #ifndef USB_VENDOR_ID_SAITEK
 #  define USB_VENDOR_ID_SAITEK 0x06a3
 #endif
@@ -227,7 +236,7 @@ static ssize_t saitek_proc_write_multipanel(struct proflight_multipanel *multipa
         multipanel->parent->dmabuf[0] = 0; // also: report id
         saitek_parse_multipanel_display(&(multipanel->parent->dmabuf[1]), &(multipanel->parent->buffer[0]), 5);
         saitek_parse_multipanel_display(&(multipanel->parent->dmabuf[6]), &(multipanel->parent->buffer[6]), 5);
-        multipanel->parent->dmabuf[11] = 0; // TODO
+        multipanel->parent->dmabuf[11] = 0; // TODO: set as per MULTIPANEL_LIGHT_* masks
         multipanel->parent->dmabuf[12] = 0;
 
         res = hid_hw_raw_request(multipanel->parent->hdev,
