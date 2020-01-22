@@ -16,6 +16,29 @@
 #include <linux/proc_fs.h>
 #include <linux/uaccess.h>
 
+
+#define SWITCH(x) ((x) ? "ON " : "OFF")
+
+#define CHECK(x) ((x) ? 1 : 0)
+
+#define MULTIPANEL_MODE(x) ( \
+                ((x) == MULTIPANEL_MODE_ALT) ? "ALT" : \
+                ((x) == MULTIPANEL_MODE_VS)  ? "VS " : \
+                ((x) == MULTIPANEL_MODE_IAS) ? "IAS" : \
+                ((x) == MULTIPANEL_MODE_HDG) ? "HDG" : \
+                ((x) == MULTIPANEL_MODE_CRS) ? "CRS" : \
+                "   ")
+
+#define RADIOPANEL_MODE(x) ( \
+                ((x) == RADIOPANEL_MODE_COM1) ? "COM1" : \
+                ((x) == RADIOPANEL_MODE_COM2) ? "COM2" : \
+                ((x) == RADIOPANEL_MODE_NAV1) ? "NAV1" : \
+                ((x) == RADIOPANEL_MODE_NAV2) ? "NAV2" : \
+                ((x) == RADIOPANEL_MODE_ADF) ? "ADF " : \
+                ((x) == RADIOPANEL_MODE_DME) ? "DME " : \
+                ((x) == RADIOPANEL_MODE_XPDR) ? "XPDR" : \
+                "   ")
+
 #ifndef USB_VENDOR_ID_SAITEK
 #  define USB_VENDOR_ID_SAITEK 0x06a3
 #endif
@@ -27,7 +50,7 @@
 #  define USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL 0x0d06
 #endif
 
-#define MAX_BUFFER 8
+#define MAX_BUFFER 256
 
 #define RADIOPANEL_MODE_COM1 1
 #define RADIOPANEL_MODE_COM2 2
@@ -89,23 +112,60 @@ struct proflight {
         char buffer[MAX_BUFFER];
 };
 
-static ssize_t saitek_proc_read(struct file *f, char __user *buf, size_t count, loff_t *offset)
+static ssize_t saitek_proc_read_radiopanel(struct proflight_radiopanel *radiopanel,
+                struct file *f, char __user *buf, size_t count, loff_t *offset)
 {
-        struct proflight *data;
+        return 0; // TODO
+}
 
-        if (*offset >= MAX_BUFFER)
+static ssize_t saitek_proc_read_multipanel(struct proflight_multipanel *multipanel,
+                struct file *f, char __user *buf, size_t count, loff_t *offset)
+{
+        char sbuf[MAX_BUFFER];
+        int res;
+        int outlen;
+
+        res = snprintf(sbuf, MAX_BUFFER,
+                        "MODE:%s HDG:%s NAV:%s IAS:%s ALT:%s VS:%s APR:%s REV:%s AP:%s "
+                        "AUTO-THROTTLE:%s FLAPS:%3d PITCH-TRIM:%3d KNOB:%3d",
+                        MULTIPANEL_MODE(multipanel->mode), SWITCH(multipanel->hdg),
+                        SWITCH(multipanel->nav), SWITCH(multipanel->ias),
+                        SWITCH(multipanel->alt), SWITCH(multipanel->vs),
+                        SWITCH(multipanel->apr), SWITCH(multipanel->rev),
+                        SWITCH(multipanel->ap), SWITCH(multipanel->auto_throttle),
+                        multipanel->flaps, multipanel->pitch_trim, multipanel->knob);
+        outlen = strlen(sbuf);
+
+        if (*offset >= outlen)
                 return 0;
-        data = PDE_DATA(file_inode(f));
-        if (!data) {
-                printk(KERN_ERR "Cannot find Saitek ProFlight device writer data.\n");
-                return -EIO;
-        }
-        if (*offset + count >= MAX_BUFFER)
-                count = MAX_BUFFER - *offset;
-        copy_to_user(buf, data->buffer, count);
+        if (*offset + count >= outlen)
+                count = outlen - *offset;
+        copy_to_user(buf, &sbuf[*offset], count);
         *offset += count;
 
         return count;
+}
+
+static ssize_t saitek_proc_read(struct file *f, char __user *buf, size_t count, loff_t *offset)
+{
+        struct proflight *driver_data;
+
+        driver_data = PDE_DATA(file_inode(f));
+        if (!driver_data) {
+                printk(KERN_ERR "Cannot find Saitek ProFlight device data.\n");
+                return -EIO;
+        }
+
+        switch(driver_data->product_id) {
+        case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
+                return saitek_proc_read_radiopanel(driver_data->data.radiopanel,
+                                f, buf, count, offset);
+        case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
+                return saitek_proc_read_multipanel(driver_data->data.multipanel,
+                                f, buf, count, offset);
+        }
+
+        return -ENXIO; // default
 }
 
 static ssize_t saitek_proc_write(struct file *f, const char __user *buf, size_t count, loff_t *offset)
@@ -116,7 +176,7 @@ static ssize_t saitek_proc_write(struct file *f, const char __user *buf, size_t 
                 return EFBIG;
         data = PDE_DATA(file_inode(f));
         if (!data) {
-                printk(KERN_ERR "Cannot find Saitek ProFlight device reader data.\n");
+                printk(KERN_ERR "Cannot find Saitek ProFlight device data.\n");
                 return -EIO;
         }
         if (*offset + count >= MAX_BUFFER)
@@ -268,21 +328,21 @@ static int saitek_proflight_multipanel_raw_event(
         
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverflow"
-        multipanel->hdg             = data[1] & 0x01;
-        multipanel->nav             = data[1] & 0x02;
-        multipanel->ias             = data[1] & 0x04;
-        multipanel->alt             = data[1] & 0x08;
-        multipanel->vs              = data[1] & 0x10;
-        multipanel->apr             = data[1] & 0x20;
-        multipanel->hdg             = data[1] & 0x40;
-        multipanel->ap              = data[0] & 0x80; // unnecessary GCC warning on overflow in conversion here
-        multipanel->flaps_up        = data[2] & 0x01;
-        multipanel->flaps_down      = data[2] & 0x02;
-        multipanel->auto_throttle   = data[1] & 0x80; // unnecessary GCC warning on overflow in conversion here
-        multipanel->pitch_trim_up   = data[2] & 0x08;
-        multipanel->pitch_trim_down = data[2] & 0x04;
-        multipanel->knob_right      = data[0] & 0x02;
-        multipanel->knob_left       = data[0] & 0x04;
+        multipanel->hdg             = CHECK(data[1] & 0x01);
+        multipanel->nav             = CHECK(data[1] & 0x02);
+        multipanel->ias             = CHECK(data[1] & 0x04);
+        multipanel->alt             = CHECK(data[1] & 0x08);
+        multipanel->vs              = CHECK(data[1] & 0x10);
+        multipanel->apr             = CHECK(data[1] & 0x20);
+        multipanel->rev             = CHECK(data[1] & 0x40);
+        multipanel->ap              = CHECK(data[0] & 0x80); // unnecessary GCC warning on overflow in conversion here
+        multipanel->flaps_up        = CHECK(data[2] & 0x01);
+        multipanel->flaps_down      = CHECK(data[2] & 0x02);
+        multipanel->auto_throttle   = CHECK(data[1] & 0x80); // unnecessary GCC warning on overflow in conversion here
+        multipanel->pitch_trim_up   = CHECK(data[2] & 0x08);
+        multipanel->pitch_trim_down = CHECK(data[2] & 0x04);
+        multipanel->knob_right      = CHECK(data[0] & 0x20);
+        multipanel->knob_left       = CHECK(data[0] & 0x40);
 #pragma GCC diagnostic pop
         if (data[0] & 0x01)
                 multipanel->mode = MULTIPANEL_MODE_ALT;
