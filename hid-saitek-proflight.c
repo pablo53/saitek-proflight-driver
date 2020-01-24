@@ -16,6 +16,7 @@
 #include <linux/proc_fs.h>
 #include <linux/uaccess.h>
 #include <linux/ctype.h>
+#include <linux/string.h>
 
 
 #define SWITCH(x) ((x) ? "ON " : "OFF")
@@ -40,8 +41,8 @@
                 ((x) == RADIOPANEL_MODE_XPDR) ? "XPDR" : \
                 "   ")
 
-#define PANEL_DIGIT_MINUS 0xe0
-#define PANEL_DIGIT_DOT   0xd0
+#define PANEL_DIGIT_MINUS 0x0e
+#define PANEL_DIGIT_DOT   0x0a
 #define PANEL_DIGIT_NULL  0xff
 
 #define MULTIPANEL_LIGHT_AP  0x01
@@ -114,6 +115,14 @@ struct proflight_multipanel {
         int knob; // accumulated movement (left - decreases, right - increases)
         char display0[5];
         char display1[5];
+        unsigned int led_hdg : 1;
+        unsigned int led_nav : 1;
+        unsigned int led_ias : 1;
+        unsigned int led_alt : 1;
+        unsigned int led_vs : 1;
+        unsigned int led_apr : 1;
+        unsigned int led_rev : 1;
+        unsigned int led_ap : 1;
 };
 
 union proflight_panel_data
@@ -212,15 +221,74 @@ static ssize_t saitek_proc_read(struct file *f, char __user *buf, size_t count, 
         return -ENXIO; // default
 }
 
+static int saitek_set_radiopanel(struct proflight_radiopanel *radiopanel)
+{
+        return 0; // TODO
+}
+
+static void saitek_buf_parse_radiopanel(struct proflight_radiopanel *radiopanel)
+{
+        // TODO
+}
+
 static ssize_t saitek_proc_write_radiopanel(struct proflight_radiopanel *radiopanel,
                 struct file *f, const char __user *buf, size_t count, loff_t *offset)
 {
+        int res;
+
         if (*offset + count >= MAX_BUFFER)
                 count = MAX_BUFFER - *offset;
         copy_from_user(&(radiopanel->parent->buffer[*offset]), buf, count);
         *offset += count;
 
+        saitek_buf_parse_radiopanel(radiopanel);
+        res = saitek_set_radiopanel(radiopanel);
+        if (res < 0)
+                printk(KERN_ERR "Error setting Saitek ProFlight Radio Panel: %d.\n", res);
+        
         return count;
+}
+
+static int saitek_set_multipanel(struct proflight_multipanel *multipanel)
+{
+        int res = 0;
+
+        multipanel->parent->dmabuf[0] = 0; // also: report id
+        memcpy(&(multipanel->parent->dmabuf[1]), multipanel->display0, 5);
+        memcpy(&(multipanel->parent->dmabuf[6]), multipanel->display1, 5);
+        multipanel->parent->dmabuf[11] =
+                          (multipanel->led_hdg ? MULTIPANEL_LIGHT_HDG : 0)
+                        + (multipanel->led_nav ? MULTIPANEL_LIGHT_NAV : 0)
+                        + (multipanel->led_ias ? MULTIPANEL_LIGHT_IAS : 0)
+                        + (multipanel->led_alt ? MULTIPANEL_LIGHT_ALT : 0)
+                        + (multipanel->led_vs  ? MULTIPANEL_LIGHT_VS  : 0)
+                        + (multipanel->led_apr ? MULTIPANEL_LIGHT_APR : 0)
+                        + (multipanel->led_rev ? MULTIPANEL_LIGHT_REV : 0)
+                        + (multipanel->led_ap  ? MULTIPANEL_LIGHT_AP  : 0);
+
+        multipanel->parent->dmabuf[12] = 0;
+
+        res = hid_hw_raw_request(multipanel->parent->hdev,
+                        multipanel->parent->dmabuf[0], multipanel->parent->dmabuf,
+                        13, HID_FEATURE_REPORT, HID_REQ_SET_REPORT);
+        
+        return res;
+}
+
+static void saitek_buf_parse_multipanel(struct proflight_multipanel *multipanel)
+{
+        saitek_parse_multipanel_display(multipanel->display0, &(multipanel->parent->buffer[0]), 5);
+        saitek_parse_multipanel_display(multipanel->display1, &(multipanel->parent->buffer[6]), 5);
+#define SET_IF_CHAR_BIN(variable,value) variable = value == '1' ? 1 : value == '0' ? 0 : variable
+        SET_IF_CHAR_BIN(multipanel->led_hdg,multipanel->parent->buffer[12]);
+        SET_IF_CHAR_BIN(multipanel->led_nav,multipanel->parent->buffer[13]);
+        SET_IF_CHAR_BIN(multipanel->led_ias,multipanel->parent->buffer[14]);
+        SET_IF_CHAR_BIN(multipanel->led_alt,multipanel->parent->buffer[15]);
+        SET_IF_CHAR_BIN(multipanel->led_vs,multipanel->parent->buffer[16]);
+        SET_IF_CHAR_BIN(multipanel->led_apr,multipanel->parent->buffer[17]);
+        SET_IF_CHAR_BIN(multipanel->led_rev,multipanel->parent->buffer[18]);
+        SET_IF_CHAR_BIN(multipanel->led_ap,multipanel->parent->buffer[19]);
+#undef SET_IF_CHAR_BIN
 }
 
 static ssize_t saitek_proc_write_multipanel(struct proflight_multipanel *multipanel,
@@ -233,17 +301,10 @@ static ssize_t saitek_proc_write_multipanel(struct proflight_multipanel *multipa
         copy_from_user(&(multipanel->parent->buffer[*offset]), buf, count);
         *offset += count;
 
-        multipanel->parent->dmabuf[0] = 0; // also: report id
-        saitek_parse_multipanel_display(&(multipanel->parent->dmabuf[1]), &(multipanel->parent->buffer[0]), 5);
-        saitek_parse_multipanel_display(&(multipanel->parent->dmabuf[6]), &(multipanel->parent->buffer[6]), 5);
-        multipanel->parent->dmabuf[11] = 0; // TODO: set as per MULTIPANEL_LIGHT_* masks
-        multipanel->parent->dmabuf[12] = 0;
-
-        res = hid_hw_raw_request(multipanel->parent->hdev,
-                        multipanel->parent->dmabuf[0], multipanel->parent->dmabuf,
-                        13, HID_FEATURE_REPORT, HID_REQ_SET_REPORT);
+        saitek_buf_parse_multipanel(multipanel);
+        res = saitek_set_multipanel(multipanel);
         if (res < 0)
-                printk(KERN_ERR "Error sending report: %d.\n", res);
+                printk(KERN_ERR "Error setting Saitek ProFlight Multi Panel: %d.\n", res);
 
         return count;
 }
