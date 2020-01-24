@@ -142,27 +142,42 @@ struct proflight {
         char buffer[MAX_BUFFER];
 };
 
-static int saitek_parse_multipanel_display(char *display, const char *msg, size_t size)
+static void saitek_parse_multipanel_display(char *display, const char *msg, size_t size)
 {
-        int dig = 0;
+        int digno = 0;
         int i = 0;
         char ch;
 
-        while (dig < 5 && i < size) {
+        while (digno < 5 && i < size) {
                 ch = msg[i++];
                 if (ch == ' ')
-                        display[dig++] = PANEL_DIGIT_NULL;
+                        display[digno++] = PANEL_DIGIT_NULL;
                 else if (ch == '-')
-                        display[dig++] = PANEL_DIGIT_MINUS;
-                else if (ch == '.')
-                        display[dig++] = PANEL_DIGIT_DOT;
+                        display[digno++] = PANEL_DIGIT_MINUS;
                 else if (isdigit(ch))
-                        display[dig++] = ch - '0';
+                        display[digno++] = ch - '0';
                 else
-                        display[dig++] = PANEL_DIGIT_NULL;
+                        display[digno++] = PANEL_DIGIT_NULL;
         }
+}
 
-        return i;
+static void saitek_format_multipanel_display(char *msg, const char *display, size_t size)
+{
+        int chno = 0;
+        int i = 0;
+        char dig;
+
+        while (chno < size && i < 5) {
+                dig = display[i++];
+                if (dig == PANEL_DIGIT_NULL)
+                        msg[chno++] = ' ';
+                else if (dig == PANEL_DIGIT_MINUS)
+                        msg[chno++] = '-';
+                else if (0 <= dig && dig < 10)
+                        msg[chno++] = '0' + dig;
+                else
+                        msg[chno++] = ' ';
+        }
 }
 
 static ssize_t saitek_proc_read_radiopanel(struct proflight_radiopanel *radiopanel,
@@ -171,23 +186,58 @@ static ssize_t saitek_proc_read_radiopanel(struct proflight_radiopanel *radiopan
         return 0; // TODO
 }
 
-static ssize_t saitek_proc_read_multipanel(struct proflight_multipanel *multipanel,
-                struct file *f, char __user *buf, size_t count, loff_t *offset)
+static int saitek_buf_format_multipanel(char *buf, struct proflight_multipanel *multipanel)
 {
-        char sbuf[MAX_BUFFER];
-        int res;
-        int outlen;
+        int len;
+        char hrdisp0[6];
+        char hrdisp1[6];
+        char leds[9];
+        char btns[9];
 
-        res = snprintf(sbuf, MAX_BUFFER,
-                        "MODE:%s HDG:%s NAV:%s IAS:%s ALT:%s VS:%s APR:%s REV:%s AP:%s "
-                        "AUTO-THROTTLE:%s FLAPS:%3d PITCH-TRIM:%3d KNOB:%3d",
+        saitek_format_multipanel_display(hrdisp0, multipanel->display0, 5);
+        saitek_format_multipanel_display(hrdisp1, multipanel->display1, 5);
+        hrdisp0[5] = 0;
+        hrdisp1[5] = 0;
+        leds[0] = multipanel->led_hdg ? '1' : '0';
+        leds[1] = multipanel->led_nav ? '1' : '0';
+        leds[2] = multipanel->led_ias ? '1' : '0';
+        leds[3] = multipanel->led_alt ? '1' : '0';
+        leds[4] = multipanel->led_vs  ? '1' : '0';
+        leds[5] = multipanel->led_apr ? '1' : '0';
+        leds[6] = multipanel->led_rev ? '1' : '0';
+        leds[7] = multipanel->led_ap  ? '1' : '0';
+        leds[8] = 0;
+        btns[0] = multipanel->hdg ? '1' : '0';
+        btns[1] = multipanel->nav ? '1' : '0';
+        btns[2] = multipanel->ias ? '1' : '0';
+        btns[3] = multipanel->alt ? '1' : '0';
+        btns[4] = multipanel->vs  ? '1' : '0';
+        btns[5] = multipanel->apr ? '1' : '0';
+        btns[6] = multipanel->rev ? '1' : '0';
+        btns[7] = multipanel->ap  ? '1' : '0';
+        btns[8] = 0;
+        len = snprintf(buf, MAX_BUFFER,
+                        "%5.5s %5.5s %8.8s %8.8s %s\n"
+                        "MODE:%s\nHDG:%s\nNAV:%s\nIAS:%s\nALT:%s\nVS:%s\nAPR:%s\nREV:%s\nAP:%s\n"
+                        "AUTO-THROTTLE:%s\nFLAPS:%3d\nPITCH-TRIM:%3d\nKNOB:%3d",
+                        hrdisp0, hrdisp1, leds, btns, MULTIPANEL_MODE(multipanel->mode),
                         MULTIPANEL_MODE(multipanel->mode), SWITCH(multipanel->hdg),
                         SWITCH(multipanel->nav), SWITCH(multipanel->ias),
                         SWITCH(multipanel->alt), SWITCH(multipanel->vs),
                         SWITCH(multipanel->apr), SWITCH(multipanel->rev),
                         SWITCH(multipanel->ap), SWITCH(multipanel->auto_throttle),
                         multipanel->flaps, multipanel->pitch_trim, multipanel->knob);
-        outlen = strlen(sbuf);
+        
+        return len;
+}
+
+static ssize_t saitek_proc_read_multipanel(struct proflight_multipanel *multipanel,
+                struct file *f, char __user *buf, size_t count, loff_t *offset)
+{
+        char sbuf[MAX_BUFFER];
+        int outlen;
+
+        outlen = saitek_buf_format_multipanel(sbuf, multipanel);
 
         if (*offset >= outlen)
                 return 0;
