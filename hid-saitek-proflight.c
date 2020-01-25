@@ -82,6 +82,13 @@
 #define MULTIPANEL_MODE_HDG 4
 #define MULTIPANEL_MODE_CRS 5
 
+#define SAITEK_MAX_FLAPS       99
+#define SAITEK_MIN_FLAPS      -99
+#define SAITEK_MAX_PITCH_TRIM  99
+#define SAITEK_MIN_PITCH_TRIM -99
+#define SAITEK_MAX_KNOB        99
+#define SAITEK_MIN_KNOB       -99
+
 struct proflight_radiopanel {
         struct proflight *parent;
         unsigned int act_stby1 : 1;
@@ -217,10 +224,12 @@ static int saitek_buf_format_multipanel(char *buf, struct proflight_multipanel *
         btns[7] = multipanel->ap  ? '1' : '0';
         btns[8] = 0;
         len = snprintf(buf, MAX_BUFFER,
-                        "%5.5s %5.5s %8.8s %8.8s %s\n"
+                        "%5.5s %5.5s %8.8s %8.8s %+3.2d %+3.2d %+3.2d %s\n"
                         "MODE:%s\nHDG:%s\nNAV:%s\nIAS:%s\nALT:%s\nVS:%s\nAPR:%s\nREV:%s\nAP:%s\n"
                         "AUTO-THROTTLE:%s\nFLAPS:%3d\nPITCH-TRIM:%3d\nKNOB:%3d",
-                        hrdisp0, hrdisp1, leds, btns, MULTIPANEL_MODE(multipanel->mode),
+                        hrdisp0, hrdisp1, leds, btns,
+                        multipanel->flaps, multipanel->pitch_trim, multipanel->knob,
+                        MULTIPANEL_MODE(multipanel->mode),
                         MULTIPANEL_MODE(multipanel->mode), SWITCH(multipanel->hdg),
                         SWITCH(multipanel->nav), SWITCH(multipanel->ias),
                         SWITCH(multipanel->alt), SWITCH(multipanel->vs),
@@ -569,17 +578,17 @@ static int saitek_proflight_multipanel_raw_event(
                 multipanel->mode = 0; // should never occur
         
         // TODO: some kind of a software debouncer
-        if (multipanel->flaps_up)
+        if (multipanel->flaps_up && multipanel->flaps < SAITEK_MAX_FLAPS)
                 multipanel->flaps++;
-        else if (multipanel->flaps_down)
+        else if (multipanel->flaps_down && multipanel->flaps > SAITEK_MIN_FLAPS)
                 multipanel->flaps--;
-        if (multipanel->pitch_trim_up)
+        if (multipanel->pitch_trim_up && multipanel->pitch_trim < SAITEK_MAX_PITCH_TRIM)
                 multipanel->pitch_trim++;
-        else if (multipanel->pitch_trim_down)
+        else if (multipanel->pitch_trim_down && multipanel->pitch_trim > SAITEK_MIN_PITCH_TRIM)
                 multipanel->pitch_trim--;
-        if (multipanel->knob_right)
+        if (multipanel->knob_right && multipanel->knob < SAITEK_MAX_KNOB)
                 multipanel->knob++;
-        else if (multipanel->knob_left)
+        else if (multipanel->knob_left && multipanel->knob > SAITEK_MIN_KNOB)
                 multipanel->knob--;
 
         return 1;
