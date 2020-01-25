@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/gfp.h>
 
+#include <linux/sysfs.h>
 #include <linux/proc_fs.h>
 #include <linux/uaccess.h>
 #include <linux/ctype.h>
@@ -144,8 +145,6 @@ struct proflight {
         int initialized;
         struct rw_semaphore *lock;
         __u32 product_id;
-        const char *proc_name;
-        struct proc_dir_entry *proflight_dir_entry;
         union proflight_panel_data data;
         struct hid_device *hdev;
         __u8 *dmabuf;
@@ -190,10 +189,10 @@ static void saitek_format_multipanel_display(char *msg, const char *display, siz
         }
 }
 
-static ssize_t saitek_proc_read_radiopanel(struct proflight_radiopanel *radiopanel,
-                struct file *f, char __user *buf, size_t count, loff_t *offset)
+static int saitek_buf_format_radiopanel(char *buf, struct proflight_radiopanel *radiopanel)
 {
-        return 0; // TODO
+        // TODO
+        return 0;
 }
 
 static int saitek_buf_format_multipanel(char *buf, struct proflight_multipanel *multipanel)
@@ -243,53 +242,6 @@ static int saitek_buf_format_multipanel(char *buf, struct proflight_multipanel *
         return len;
 }
 
-static ssize_t saitek_proc_read_multipanel(struct proflight_multipanel *multipanel,
-                struct file *f, char __user *buf, size_t count, loff_t *offset)
-{
-        char sbuf[MAX_BUFFER];
-        int outlen;
-
-        outlen = saitek_buf_format_multipanel(sbuf, multipanel);
-
-        if (*offset >= outlen)
-                return 0;
-        if (*offset + count >= outlen)
-                count = outlen - *offset;
-        copy_to_user(buf, &sbuf[*offset], count);
-        *offset += count;
-
-        return count;
-}
-
-static ssize_t saitek_proc_read(struct file *f, char __user *buf, size_t count, loff_t *offset)
-{
-        struct proflight *driver_data;
-        ssize_t ret_val;
-
-        driver_data = PDE_DATA(file_inode(f));
-        if (!driver_data) {
-                printk(KERN_ERR "Cannot find Saitek ProFlight device data.\n");
-                return -EIO;
-        }
-
-        down_read(driver_data->lock);
-        switch(driver_data->product_id) {
-        case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
-                ret_val = saitek_proc_read_radiopanel(driver_data->data.radiopanel,
-                                f, buf, count, offset);
-                break;
-        case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
-                ret_val = saitek_proc_read_multipanel(driver_data->data.multipanel,
-                                f, buf, count, offset);
-                break;
-        default:
-                ret_val = -ENXIO;
-        }
-        up_read(driver_data->lock);
-
-        return ret_val;
-}
-
 static int saitek_set_radiopanel(struct proflight_radiopanel *radiopanel)
 {
         return 0; // TODO
@@ -298,24 +250,6 @@ static int saitek_set_radiopanel(struct proflight_radiopanel *radiopanel)
 static void saitek_buf_parse_radiopanel(struct proflight_radiopanel *radiopanel)
 {
         // TODO
-}
-
-static ssize_t saitek_proc_write_radiopanel(struct proflight_radiopanel *radiopanel,
-                struct file *f, const char __user *buf, size_t count, loff_t *offset)
-{
-        int res;
-
-        if (*offset + count >= MAX_BUFFER)
-                count = MAX_BUFFER - *offset;
-        copy_from_user(&(radiopanel->parent->buffer[*offset]), buf, count);
-        *offset += count;
-
-        saitek_buf_parse_radiopanel(radiopanel);
-        res = saitek_set_radiopanel(radiopanel);
-        if (res < 0)
-                printk(KERN_ERR "Error setting Saitek ProFlight Radio Panel: %d.\n", res);
-        
-        return count;
 }
 
 static int saitek_set_multipanel(struct proflight_multipanel *multipanel)
@@ -360,46 +294,66 @@ static void saitek_buf_parse_multipanel(struct proflight_multipanel *multipanel)
 #undef SET_IF_CHAR_BIN
 }
 
-static ssize_t saitek_proc_write_multipanel(struct proflight_multipanel *multipanel,
-                struct file *f, const char __user *buf, size_t count, loff_t *offset)
-{
-        int res;
-
-        if (*offset + count >= MAX_BUFFER)
-                count = MAX_BUFFER - *offset;
-        copy_from_user(&(multipanel->parent->buffer[*offset]), buf, count);
-        *offset += count;
-
-        saitek_buf_parse_multipanel(multipanel);
-        res = saitek_set_multipanel(multipanel);
-        if (res < 0)
-                printk(KERN_ERR "Error setting Saitek ProFlight Multi Panel: %d.\n", res);
-
-        return count;
-}
-
-static ssize_t saitek_proc_write(struct file *f, const char __user *buf, size_t count, loff_t *offset)
+static ssize_t saitek_proflight_show(struct device *dev,
+                struct device_attribute *attr, char *buf)
 {
         struct proflight *driver_data;
         ssize_t ret_val;
 
-        if (*offset >= MAX_BUFFER)
-                return EFBIG;
-        driver_data = PDE_DATA(file_inode(f));
+        driver_data = dev_get_drvdata(dev);
         if (!driver_data) {
                 printk(KERN_ERR "Cannot find Saitek ProFlight device data.\n");
                 return -EIO;
         }
-        
-        down_write(driver_data->lock);
+
+        down_read(driver_data->lock);
         switch(driver_data->product_id) {
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
-                ret_val = saitek_proc_write_radiopanel(driver_data->data.radiopanel,
-                                f, buf, count, offset);
+                ret_val = saitek_buf_format_radiopanel(buf,
+                                driver_data->data.radiopanel);
                 break;
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
-                ret_val = saitek_proc_write_multipanel(driver_data->data.multipanel,
-                                f, buf, count, offset);
+                ret_val = saitek_buf_format_multipanel(buf,
+                                driver_data->data.multipanel);
+                break;
+        default:
+                ret_val = -ENXIO;
+        }
+        up_read(driver_data->lock);
+
+        return ret_val;
+}
+
+static ssize_t saitek_proflight_store(struct device *dev,
+                struct device_attribute *attr, const char *buf, size_t count)
+{
+        struct proflight *driver_data;
+        ssize_t ret_val;
+
+        driver_data = dev_get_drvdata(dev);
+        if (!driver_data) {
+                printk(KERN_ERR "Cannot find Saitek ProFlight device data.\n");
+                return -EIO;
+        }
+
+        down_write(driver_data->lock);
+        memcpy(driver_data->buffer, buf, (count <= MAX_BUFFER) ? count : MAX_BUFFER);
+        switch(driver_data->product_id) {
+        case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
+                saitek_buf_parse_radiopanel(driver_data->data.radiopanel);
+                ret_val = saitek_set_radiopanel(driver_data->data.radiopanel);
+                if (ret_val < 0)
+                        printk(KERN_ERR "Error setting Saitek ProFlight Radio Panel: %ld.\n", ret_val);
+                else
+                        ret_val = count; // informing the caller that we consumed the whole buffer
+                break;
+        case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
+                saitek_buf_parse_multipanel(driver_data->data.multipanel);
+                ret_val = saitek_set_multipanel(driver_data->data.multipanel);
+                if (ret_val < 0)
+                        printk(KERN_ERR "Error setting Saitek ProFlight Multi Panel: %ld.\n", ret_val);
+                else
+                        ret_val = count; // informing the caller that we consumed the whole buffer
                 break;
         default:
                 ret_val = -ENXIO;
@@ -409,23 +363,9 @@ static ssize_t saitek_proc_write(struct file *f, const char __user *buf, size_t 
         return ret_val;
 }
 
-static const struct file_operations saitek_proc_fops = {
-        .owner = THIS_MODULE,
-        .read = saitek_proc_read,
-        .write = saitek_proc_write,
-};
-
-static inline const char* proc_name(__u32 product_id)
-{
-        switch (product_id) {
-        case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
-                return "proflight-radiopanel";
-        case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
-                return "proflight-multipanel";
-        default:
-                return NULL;
-        }
-}
+static DEVICE_ATTR(proflight,
+                S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH,
+                saitek_proflight_show, saitek_proflight_store);
 
 static int saitek_proflight_alloc_panel_data(
                 struct hid_device *hdev, const struct hid_device_id *id,
@@ -515,29 +455,25 @@ static int saitek_proflight_probe(struct hid_device *hdev, const struct hid_devi
         }
         init_rwsem(driver_data->lock);
         down_write(driver_data->lock);
+        res = device_create_file(&hdev->dev, &dev_attr_proflight);
+        if (res) {
+                hid_err(hdev, "Failed to initialize device attribuutes.\n");
+                goto fail_dev;
+        }
         driver_data->product_id = id->product;
-        driver_data->proc_name = proc_name(id->product);
         driver_data->hdev = hdev;
         hid_set_drvdata(hdev, driver_data);
 
-        driver_data->proflight_dir_entry = proc_create_data(driver_data->proc_name,
-                        0666, NULL, &saitek_proc_fops, driver_data);
-        if (!driver_data->proflight_dir_entry) {
-                hid_err(hdev, "Cannot create '/proc/%s' entry.\n", driver_data->proc_name);
-                res = -EIO;
-                goto fail_proc;
-        }
-
         res = saitek_proflight_hid_start(hdev);
         if (res)
-                goto fail_proc;
+                goto fail_dev;
 
         driver_data->initialized = 1;
 
         goto exit_sem;
 
-fail_proc:
-        remove_proc_entry(driver_data->proc_name, NULL);
+fail_dev:
+        device_remove_file(&hdev->dev, &dev_attr_proflight);
 exit_sem:
         up_write(driver_data->lock);
 exit:
@@ -558,7 +494,7 @@ void saitek_proflight_remove(struct hid_device *hdev)
         down_write(driver_data->lock);
         if (driver_data->initialized) {
                 hid_hw_stop(hdev);
-                remove_proc_entry(driver_data->proc_name, NULL);
+                device_remove_file(&hdev->dev, &dev_attr_proflight);
                 driver_data->initialized = 0;
         }
         up_write(driver_data->lock);
@@ -683,7 +619,7 @@ static int __init saitek_proflight_init(void)
         ret = hid_register_driver(&saitek_proflight_driver);
         if (ret)
                 printk(KERN_ERR "Cannot register Saitek Pro Flight driver (err %i).\n", ret);
-        
+
         return ret;
 }
 
