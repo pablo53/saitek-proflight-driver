@@ -85,6 +85,8 @@
 #define MULTIPANEL_MODE_HDG 4
 #define MULTIPANEL_MODE_CRS 5
 
+#define SAITEK_MAX_BTN 9
+
 #define SAITEK_MAX_FLAPS       99
 #define SAITEK_MIN_FLAPS      -99
 #define SAITEK_MAX_PITCH_TRIM  99
@@ -120,6 +122,14 @@ struct proflight_multipanel {
         unsigned int knob_right : 1;
         unsigned int knob_left : 1;
         int mode;
+        int ahdg; // accumulated hdg
+        int anav; // accumulated nav
+        int aias; // accumulated ias
+        int aalt; // accumulated alt
+        int avs;  // accumualted vs
+        int aapr; // accumulated apr
+        int arev; // accumulated rev
+        int aap;  // accumulated ap
         int flaps; // accumulated movement (DN - decreases, UP - increases)
         int pitch_trim; // accumulated movement (DN - decreases, UP - increases)
         int knob; // accumulated movement (left - decreases, right - increases)
@@ -226,24 +236,44 @@ static int saitek_buf_format_multipanel(char *buf, struct proflight_multipanel *
         btns[7] = multipanel->ap  ? '1' : '0';
         btns[8] = 0;
         len = snprintf(buf, MAX_BUFFER,
-                        "%5.5s %5.5s %8.8s %c %8.8s %c %+3.2d %+3.2d %+3.2d %s\n"
-                        "MODE:%s\nHDG:%s\nNAV:%s\nIAS:%s\nALT:%s\nVS:%s\nAPR:%s\nREV:%s\nAP:%s\n"
+                        "[MP] %5.5s %5.5s %8.8s %c %8.8s %c %+3.2d %+3.2d %+3.2d "
+                        "%1.1d %1.1d %1.1d %1.1d %1.1d %1.1d %1.1d %1.1d %s\n"
+                        "DEVICE TYPE: MULTI PANEL\n"
+                        "MODE:%s\nHDG:%s (%1.1d)\nNAV:%s (%1.1d)\n"
+                        "IAS:%s (%1.1d)\nALT:%s (%1.1d)\nVS:%s (%1.1d)"
+                        "\nAPR:%s (%1.1d)\nREV:%s (%1.1d)\nAP:%s (%1.1d)\n"
                         "AUTO-THROTTLE:%s\nFLAPS:%3d\nPITCH-TRIM:%3d\nKNOB:%3d",
                         hrdisp0, hrdisp1, leds, multipanel->parent->mode, btns,
                         multipanel->auto_throttle ? '1' : '0',
                         multipanel->flaps, multipanel->pitch_trim, multipanel->knob,
+                        multipanel->ahdg, multipanel->anav, multipanel->aias,
+                        multipanel->aalt, multipanel->avs, multipanel->aapr,
+                        multipanel->arev, multipanel->aap,
                         MULTIPANEL_MODE(multipanel->mode),
-                        MULTIPANEL_MODE(multipanel->mode), SWITCH(multipanel->hdg),
-                        SWITCH(multipanel->nav), SWITCH(multipanel->ias),
-                        SWITCH(multipanel->alt), SWITCH(multipanel->vs),
-                        SWITCH(multipanel->apr), SWITCH(multipanel->rev),
-                        SWITCH(multipanel->ap), SWITCH(multipanel->auto_throttle),
+                        MULTIPANEL_MODE(multipanel->mode),
+                        SWITCH(multipanel->hdg), multipanel->ahdg,
+                        SWITCH(multipanel->nav), multipanel->anav,
+                        SWITCH(multipanel->ias), multipanel->aias,
+                        SWITCH(multipanel->alt), multipanel->aalt,
+                        SWITCH(multipanel->vs), multipanel->avs,
+                        SWITCH(multipanel->apr), multipanel->aapr,
+                        SWITCH(multipanel->rev), multipanel->arev,
+                        SWITCH(multipanel->ap), multipanel->aap,
+                        SWITCH(multipanel->auto_throttle),
                         multipanel->flaps, multipanel->pitch_trim, multipanel->knob);
         switch (multipanel->parent->mode) {
                 case 'R':
                         multipanel->flaps = 0;
                         multipanel->pitch_trim = 0;
                         multipanel->knob = 0;
+                        multipanel->ahdg = 0;
+                        multipanel->anav = 0;
+                        multipanel->aias = 0;
+                        multipanel->aalt = 0;
+                        multipanel->avs  = 0;
+                        multipanel->aapr = 0;
+                        multipanel->arev = 0;
+                        multipanel->aap  = 0;
                         break;
         }
         
@@ -571,6 +601,22 @@ static int saitek_proflight_multipanel_raw_event(
                 multipanel->mode = 0; // should never occur
         
         // TODO: some kind of a software debouncer
+        if (multipanel->hdg && multipanel->ahdg < SAITEK_MAX_BTN)
+                multipanel->ahdg++;
+        if (multipanel->nav && multipanel->anav < SAITEK_MAX_BTN)
+                multipanel->anav++;
+        if (multipanel->ias && multipanel->aias < SAITEK_MAX_BTN)
+                multipanel->aias++;
+        if (multipanel->alt && multipanel->aalt < SAITEK_MAX_BTN)
+                multipanel->aalt++;
+        if (multipanel->vs && multipanel->avs < SAITEK_MAX_BTN)
+                multipanel->avs++;
+        if (multipanel->apr && multipanel->aapr < SAITEK_MAX_BTN)
+                multipanel->aapr++;
+        if (multipanel->rev && multipanel->arev < SAITEK_MAX_BTN)
+                multipanel->arev++;
+        if (multipanel->ap && multipanel->aap < SAITEK_MAX_BTN)
+                multipanel->aap++;
         if (multipanel->flaps_up && multipanel->flaps < SAITEK_MAX_FLAPS)
                 multipanel->flaps++;
         else if (multipanel->flaps_down && multipanel->flaps > SAITEK_MIN_FLAPS)
