@@ -12,11 +12,13 @@
 #include <linux/hid.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/gfp.h>
 
 #include <linux/proc_fs.h>
 #include <linux/uaccess.h>
 #include <linux/ctype.h>
 #include <linux/string.h>
+#include <linux/rwsem.h>
 
 
 #define SWITCH(x) ((x) ? "ON " : "OFF")
@@ -140,6 +142,7 @@ union proflight_panel_data
 
 struct proflight {
         int initialized;
+        struct rw_semaphore *lock;
         __u32 product_id;
         const char *proc_name;
         struct proc_dir_entry *proflight_dir_entry;
@@ -261,6 +264,7 @@ static ssize_t saitek_proc_read_multipanel(struct proflight_multipanel *multipan
 static ssize_t saitek_proc_read(struct file *f, char __user *buf, size_t count, loff_t *offset)
 {
         struct proflight *driver_data;
+        ssize_t ret_val;
 
         driver_data = PDE_DATA(file_inode(f));
         if (!driver_data) {
@@ -268,16 +272,22 @@ static ssize_t saitek_proc_read(struct file *f, char __user *buf, size_t count, 
                 return -EIO;
         }
 
+        down_read(driver_data->lock);
         switch(driver_data->product_id) {
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
-                return saitek_proc_read_radiopanel(driver_data->data.radiopanel,
+                ret_val = saitek_proc_read_radiopanel(driver_data->data.radiopanel,
                                 f, buf, count, offset);
+                break;
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
-                return saitek_proc_read_multipanel(driver_data->data.multipanel,
+                ret_val = saitek_proc_read_multipanel(driver_data->data.multipanel,
                                 f, buf, count, offset);
+                break;
+        default:
+                ret_val = -ENXIO;
         }
+        up_read(driver_data->lock);
 
-        return -ENXIO; // default
+        return ret_val;
 }
 
 static int saitek_set_radiopanel(struct proflight_radiopanel *radiopanel)
@@ -371,6 +381,7 @@ static ssize_t saitek_proc_write_multipanel(struct proflight_multipanel *multipa
 static ssize_t saitek_proc_write(struct file *f, const char __user *buf, size_t count, loff_t *offset)
 {
         struct proflight *driver_data;
+        ssize_t ret_val;
 
         if (*offset >= MAX_BUFFER)
                 return EFBIG;
@@ -380,19 +391,26 @@ static ssize_t saitek_proc_write(struct file *f, const char __user *buf, size_t 
                 return -EIO;
         }
         
+        down_write(driver_data->lock);
         switch(driver_data->product_id) {
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
-                return saitek_proc_write_radiopanel(driver_data->data.radiopanel,
+                ret_val = saitek_proc_write_radiopanel(driver_data->data.radiopanel,
                                 f, buf, count, offset);
+                break;
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
-                return saitek_proc_write_multipanel(driver_data->data.multipanel,
+                ret_val = saitek_proc_write_multipanel(driver_data->data.multipanel,
                                 f, buf, count, offset);
+                break;
+        default:
+                ret_val = -ENXIO;
         }
+        up_write(driver_data->lock);
 
-        return -ENXIO;
+        return ret_val;
 }
 
 static const struct file_operations saitek_proc_fops = {
+        .owner = THIS_MODULE,
         .read = saitek_proc_read,
         .write = saitek_proc_write,
 };
@@ -450,7 +468,7 @@ static int saitek_proflight_alloc_panel_data(
         (*driver_data_p)->data = panel_data;
 #pragma GCC diagnostic pop
 
-        (*driver_data_p)->dmabuf = devm_kzalloc(&hdev->dev, SAITEK_HID_BUF_LEN, GFP_KERNEL);
+        (*driver_data_p)->dmabuf = devm_kzalloc(&hdev->dev, SAITEK_HID_BUF_LEN, GFP_DMA | GFP_KERNEL);
         if (!((*driver_data_p)->dmabuf)) {
                 hid_err(hdev, "No memory for Saitek ProFlight HID buffer.\n");
                 return -ENOMEM;
@@ -488,12 +506,19 @@ static int saitek_proflight_probe(struct hid_device *hdev, const struct hid_devi
         res = saitek_proflight_alloc_panel_data(hdev, id, &driver_data);
         if (res) {
                 hid_err(hdev, "Failed to initialize panel data.\n");
-                goto fail;
+                goto exit;
         }
-        hid_set_drvdata(hdev, driver_data);
+        driver_data->lock = devm_kzalloc(&hdev->dev, sizeof(struct rw_semaphore), GFP_KERNEL);
+        if (!driver_data->lock) {
+                hid_err(hdev, "Failed to initialize semaphore.\n");
+                goto exit;
+        }
+        init_rwsem(driver_data->lock);
+        down_write(driver_data->lock);
         driver_data->product_id = id->product;
         driver_data->proc_name = proc_name(id->product);
         driver_data->hdev = hdev;
+        hid_set_drvdata(hdev, driver_data);
 
         driver_data->proflight_dir_entry = proc_create_data(driver_data->proc_name,
                         0666, NULL, &saitek_proc_fops, driver_data);
@@ -509,11 +534,12 @@ static int saitek_proflight_probe(struct hid_device *hdev, const struct hid_devi
 
         driver_data->initialized = 1;
 
-        goto exit;
+        goto exit_sem;
 
 fail_proc:
         remove_proc_entry(driver_data->proc_name, NULL);
-fail:
+exit_sem:
+        up_write(driver_data->lock);
 exit:
         return res;
 }
@@ -529,11 +555,13 @@ void saitek_proflight_remove(struct hid_device *hdev)
                 hid_err(hdev, "Saitek ProFlight driver data not found.\n");
                 return;
         }
+        down_write(driver_data->lock);
         if (driver_data->initialized) {
                 hid_hw_stop(hdev);
                 remove_proc_entry(driver_data->proc_name, NULL);
                 driver_data->initialized = 0;
         }
+        up_write(driver_data->lock);
 }
 
 static int saitek_proflight_multipanel_raw_event(
@@ -606,18 +634,24 @@ static int saitek_proflight_radiopanel_raw_event(
 static int saitek_proflight_raw_event(struct hid_device *hdev, struct hid_report *report, u8 *data, int size)
 {
         struct proflight *driver_data;
+        int ret_val = -1;
 
         driver_data = hid_get_drvdata(hdev);
         if (!driver_data)
                 return -1;
+        
+        down_write(driver_data->lock);
         switch (driver_data->product_id) {
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
-                return saitek_proflight_multipanel_raw_event(driver_data->data.multipanel, hdev, report, data, size);
+                ret_val = saitek_proflight_multipanel_raw_event(driver_data->data.multipanel, hdev, report, data, size);
+                break;
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
-                return saitek_proflight_radiopanel_raw_event(driver_data->data.radiopanel, hdev, report, data, size);
-        default:
-                return -1;
+                ret_val = saitek_proflight_radiopanel_raw_event(driver_data->data.radiopanel, hdev, report, data, size);
+                break;
         }
+        up_write(driver_data->lock);
+
+        return ret_val;
 }
 
 static int saitek_proflight_event(struct hid_device *hdev, struct hid_field *field, struct hid_usage *usage, __s32 value)
