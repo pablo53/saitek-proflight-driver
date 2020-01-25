@@ -226,10 +226,11 @@ static int saitek_buf_format_multipanel(char *buf, struct proflight_multipanel *
         btns[7] = multipanel->ap  ? '1' : '0';
         btns[8] = 0;
         len = snprintf(buf, MAX_BUFFER,
-                        "%5.5s %5.5s %8.8s %8.8s %+3.2d %+3.2d %+3.2d %s\n"
+                        "%5.5s %5.5s %8.8s %8.8s %c %+3.2d %+3.2d %+3.2d %s\n"
                         "MODE:%s\nHDG:%s\nNAV:%s\nIAS:%s\nALT:%s\nVS:%s\nAPR:%s\nREV:%s\nAP:%s\n"
                         "AUTO-THROTTLE:%s\nFLAPS:%3d\nPITCH-TRIM:%3d\nKNOB:%3d",
                         hrdisp0, hrdisp1, leds, btns,
+                        multipanel->auto_throttle ? '1' : '0',
                         multipanel->flaps, multipanel->pitch_trim, multipanel->knob,
                         MULTIPANEL_MODE(multipanel->mode),
                         MULTIPANEL_MODE(multipanel->mode), SWITCH(multipanel->hdg),
