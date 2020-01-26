@@ -22,6 +22,14 @@
 #include <linux/rwsem.h>
 
 
+#define SAITEK_LOCK_TYPE          struct rw_semaphore *
+#define SAITEK_LOCK_SIZE          sizeof(struct rw_semaphore)
+#define SAITEK_INIT_LOCK(lock)    init_rwsem(lock)
+#define SAITEK_LOCK_READ(lock)    down_read(lock)
+#define SAITEK_UNLOCK_READ(lock)  up_read(lock)
+#define SAITEK_LOCK_WRITE(lock)   down_write(lock)
+#define SAITEK_UNLOCK_WRITE(lock) up_write(lock)
+
 #define SWITCH(x) ((x) ? "ON " : "OFF")
 
 #define CHECK(x) ((x) ? 1 : 0)
@@ -44,9 +52,9 @@
                 ((x) == RADIOPANEL_MODE_XPDR) ? "XPDR" : \
                 "   ")
 
-#define PANEL_DIGIT_MINUS 0x0e
-#define PANEL_DIGIT_DOT   0x0a
-#define PANEL_DIGIT_NULL  0xff
+#define PANEL_DIGIT_MINUS ((char)0x0e)
+#define PANEL_DIGIT_DOT   ((char)0xd0)
+#define PANEL_DIGIT_NULL  ((char)0x0f)
 
 #define MULTIPANEL_LIGHT_AP  0x01
 #define MULTIPANEL_LIGHT_HDG 0x02
@@ -169,7 +177,7 @@ union proflight_panel_data
 
 struct proflight {
         int initialized;
-        struct rw_semaphore *lock;
+        SAITEK_LOCK_TYPE lock;
         char mode; // 'R' - reset Flaps, Pith Trim, Knob after every read; 'N' - normal
         __u32 product_id;
         union proflight_panel_data data;
@@ -177,14 +185,39 @@ struct proflight {
         __u8 *dmabuf;
 };
 
-static void saitek_parse_multipanel_display(char *display, const char *msg, size_t size)
+static void saitek_parse_radiopanel_display(char *display, const char *buf, size_t bufsize)
 {
         int digno = 0;
         int i = 0;
         char ch;
 
-        while (digno < 5 && i < size) {
-                ch = msg[i++];
+        while (digno < 5) {
+                ch = (i < bufsize) ? buf[i++] : ' ';
+                if (ch == ' ') {
+                        display[digno++] = PANEL_DIGIT_NULL;
+                } else if (isdigit(ch)) {
+                        display[digno++] = ch - '0';
+                } else if (ch == '.') {
+                        if (digno == 0)
+                                display[digno++] = PANEL_DIGIT_NULL;
+                        display[digno - 1] |= PANEL_DIGIT_DOT;
+                } else {
+                        display[digno++] = PANEL_DIGIT_NULL;
+                }
+        }
+        if (i < bufsize && digno > 0)
+                if (buf[i] == '.')
+                        display[digno - 1] |= PANEL_DIGIT_DOT;
+}
+
+static void saitek_parse_multipanel_display(char *display, const char *buf, size_t bufsize)
+{
+        int digno = 0;
+        int i = 0;
+        char ch;
+
+        while (digno < 5 && i < bufsize) {
+                ch = buf[i++];
                 if (ch == ' ')
                         display[digno++] = PANEL_DIGIT_NULL;
                 else if (ch == '-')
@@ -196,32 +229,69 @@ static void saitek_parse_multipanel_display(char *display, const char *msg, size
         }
 }
 
-static void saitek_format_multipanel_display(char *msg, const char *display, size_t size)
+static int saitek_format_radiopanel_display(char *buf, const char *display, size_t bufsize)
+{
+        int chno = 0;
+        int i = 0;
+        char dig, digflag;
+
+        while (chno < bufsize && i < 5) {
+                dig = display[i] & (char)0x0f;
+                digflag = display[i] & (char)0xf0;
+                i++;
+                if (dig == PANEL_DIGIT_NULL)
+                        buf[chno++] = ' ';
+                else if (0 <= dig && dig < 10)
+                        buf[chno++] = '0' + dig;
+                else
+                        buf[chno++] = '?';
+                if (digflag == PANEL_DIGIT_DOT)
+                        buf[chno++] = '.';
+        }
+
+        return chno;
+}
+
+static void saitek_format_multipanel_display(char *buf, const char *display, size_t bufsize)
 {
         int chno = 0;
         int i = 0;
         char dig;
 
-        while (chno < size && i < 5) {
+        while (chno < bufsize && i < 5) {
                 dig = display[i++];
                 if (dig == PANEL_DIGIT_NULL)
-                        msg[chno++] = ' ';
+                        buf[chno++] = ' ';
                 else if (dig == PANEL_DIGIT_MINUS)
-                        msg[chno++] = '-';
+                        buf[chno++] = '-';
                 else if (0 <= dig && dig < 10)
-                        msg[chno++] = '0' + dig;
+                        buf[chno++] = '0' + dig;
                 else
-                        msg[chno++] = ' ';
+                        buf[chno++] = ' ';
         }
 }
 
 static int saitek_buf_format_radiopanel(char *buf, struct proflight_radiopanel *radiopanel)
 {
         int len;
+        char hrdisp0l[11];
+        char hrdisp0r[11];
+        char hrdisp1l[11];
+        char hrdisp1r[11];
+        int len0l, len0r, len1l, len1r;
 
-        len = snprintf(buf, MAX_BUFFER, "[RP] "
+        len0l = saitek_format_radiopanel_display(hrdisp0l, radiopanel->display0l, 10);
+        len0r = saitek_format_radiopanel_display(hrdisp0r, radiopanel->display0r, 10);
+        len1l = saitek_format_radiopanel_display(hrdisp1l, radiopanel->display1l, 10);
+        len1r = saitek_format_radiopanel_display(hrdisp1r, radiopanel->display1r, 10);
+        hrdisp0l[len0l] = 0;
+        hrdisp0r[len0r] = 0;
+        hrdisp1l[len1l] = 0;
+        hrdisp1r[len1r] = 0;
+        len = snprintf(buf, MAX_BUFFER, "[RP] %-10.10s %-10.10s %-10.10s %-10.10s %c "
                         "%c %1.1d %3.2d %3.2d %4.4s "
                         "%c %1.1d %3.2d %3.2d %4.4s",
+                        hrdisp0l, hrdisp0r, hrdisp1l, hrdisp1r, radiopanel->parent->mode,
                         radiopanel->actstby0 ? '1' : '0', radiopanel->aactstby0,
                         radiopanel->innerknob0, radiopanel->outerknob0,
                         RADIOPANEL_MODE(radiopanel->mode0),
@@ -229,6 +299,16 @@ static int saitek_buf_format_radiopanel(char *buf, struct proflight_radiopanel *
                         radiopanel->innerknob1, radiopanel->outerknob1,
                         RADIOPANEL_MODE(radiopanel->mode1)
         );
+        switch (radiopanel->parent->mode) {
+                case 'R':
+                        radiopanel->aactstby0 = 0;
+                        radiopanel->aactstby1 = 0;
+                        radiopanel->innerknob0 = 0;
+                        radiopanel->outerknob0 = 0;
+                        radiopanel->innerknob1 = 0;
+                        radiopanel->outerknob1 = 0;
+                        break;
+        }
 
         return len;
 }
@@ -310,13 +390,46 @@ static int saitek_buf_format_multipanel(char *buf, struct proflight_multipanel *
 
 static int saitek_set_radiopanel(struct proflight_radiopanel *radiopanel)
 {
-        return 0; // TODO
+        int res = 0;
+
+        radiopanel->parent->dmabuf[0] = 0; // also: report id
+        memcpy(&(radiopanel->parent->dmabuf[1]), radiopanel->display0l, 5);
+        memcpy(&(radiopanel->parent->dmabuf[6]), radiopanel->display0r, 5);
+        memcpy(&(radiopanel->parent->dmabuf[11]), radiopanel->display1l, 5);
+        memcpy(&(radiopanel->parent->dmabuf[16]), radiopanel->display1r, 5);
+        radiopanel->parent->dmabuf[21] = 0;
+        radiopanel->parent->dmabuf[22] = 0;
+
+        res = hid_hw_raw_request(radiopanel->parent->hdev,
+                        radiopanel->parent->dmabuf[0], radiopanel->parent->dmabuf,
+                        23, HID_FEATURE_REPORT, HID_REQ_SET_REPORT);
+        
+        return res;
 }
 
 static void saitek_buf_parse_radiopanel(struct proflight_radiopanel *radiopanel,
                 const char *buf, size_t count)
 {
-        // TODO
+        if (count < 45) {
+                hid_err(radiopanel->parent->hdev,
+                                "Saitek ProFlight Radio Panel state ('%.*s') too short (%li).\n",
+                                (int)count, buf, count);
+                return;
+        } else if (count > 45) {
+                hid_warn(radiopanel->parent->hdev,
+                                "Saitek ProFlight Radio Panel state ('%.*s') too long (%li).\n",
+                                (int)count, buf, count);
+        }
+        saitek_parse_radiopanel_display(radiopanel->display0l, &buf[0], 10);
+        saitek_parse_radiopanel_display(radiopanel->display0r, &buf[11], 10);
+        saitek_parse_radiopanel_display(radiopanel->display1l, &buf[22], 10);
+        saitek_parse_radiopanel_display(radiopanel->display1r, &buf[33], 10);
+
+        switch (buf[44]) {
+                case 'N':
+                case 'R':
+                        radiopanel->parent->mode = buf[44];
+        }
 }
 
 static int saitek_set_multipanel(struct proflight_multipanel *multipanel)
@@ -389,7 +502,7 @@ static ssize_t saitek_proflight_show(struct device *dev,
                 return -EIO;
         }
 
-        down_read(driver_data->lock);
+        SAITEK_LOCK_READ(driver_data->lock);
         switch(driver_data->product_id) {
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
                 ret_val = saitek_buf_format_radiopanel(buf,
@@ -402,7 +515,7 @@ static ssize_t saitek_proflight_show(struct device *dev,
         default:
                 ret_val = -ENXIO;
         }
-        up_read(driver_data->lock);
+        SAITEK_UNLOCK_READ(driver_data->lock);
 
         return ret_val;
 }
@@ -423,7 +536,7 @@ static ssize_t saitek_proflight_store(struct device *dev,
         true_count = count;
         if (count > 0 && buf[count- 1] == '\n')
                 true_count--; // ignore trailing new line character
-        down_write(driver_data->lock);
+        SAITEK_LOCK_WRITE(driver_data->lock);
         switch(driver_data->product_id) {
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
                 saitek_buf_parse_radiopanel(driver_data->data.radiopanel, buf, true_count);
@@ -444,7 +557,7 @@ static ssize_t saitek_proflight_store(struct device *dev,
         default:
                 ret_val = -ENXIO;
         }
-        up_write(driver_data->lock);
+        SAITEK_UNLOCK_WRITE(driver_data->lock);
 
         return ret_val;
 }
@@ -534,13 +647,13 @@ static int saitek_proflight_probe(struct hid_device *hdev, const struct hid_devi
                 hid_err(hdev, "Failed to initialize panel data.\n");
                 goto exit;
         }
-        driver_data->lock = devm_kzalloc(&hdev->dev, sizeof(struct rw_semaphore), GFP_KERNEL);
+        driver_data->lock = devm_kzalloc(&hdev->dev, sizeof(SAITEK_LOCK_SIZE), GFP_KERNEL);
         if (!driver_data->lock) {
                 hid_err(hdev, "Failed to initialize semaphore.\n");
                 goto exit;
         }
-        init_rwsem(driver_data->lock);
-        down_write(driver_data->lock);
+        SAITEK_INIT_LOCK(driver_data->lock);
+        SAITEK_LOCK_WRITE(driver_data->lock);
         res = device_create_file(&hdev->dev, &dev_attr_proflight);
         if (res) {
                 hid_err(hdev, "Failed to initialize device attribuutes.\n");
@@ -562,7 +675,7 @@ static int saitek_proflight_probe(struct hid_device *hdev, const struct hid_devi
 fail_dev:
         device_remove_file(&hdev->dev, &dev_attr_proflight);
 exit_sem:
-        up_write(driver_data->lock);
+        SAITEK_UNLOCK_WRITE(driver_data->lock);
 exit:
         return res;
 }
@@ -578,13 +691,13 @@ void saitek_proflight_remove(struct hid_device *hdev)
                 hid_err(hdev, "Saitek ProFlight driver data not found.\n");
                 return;
         }
-        down_write(driver_data->lock);
+        SAITEK_LOCK_WRITE(driver_data->lock);
         if (driver_data->initialized) {
                 hid_hw_stop(hdev);
                 device_remove_file(&hdev->dev, &dev_attr_proflight);
                 driver_data->initialized = 0;
         }
-        up_write(driver_data->lock);
+        SAITEK_UNLOCK_WRITE(driver_data->lock);
 }
 
 static int saitek_proflight_multipanel_raw_event(
@@ -764,7 +877,7 @@ static int saitek_proflight_raw_event(struct hid_device *hdev, struct hid_report
         if (!driver_data)
                 return -1;
         
-        down_write(driver_data->lock);
+        SAITEK_LOCK_WRITE(driver_data->lock);
         switch (driver_data->product_id) {
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
                 ret_val = saitek_proflight_multipanel_raw_event(driver_data->data.multipanel, hdev, report, data, size);
@@ -773,7 +886,7 @@ static int saitek_proflight_raw_event(struct hid_device *hdev, struct hid_report
                 ret_val = saitek_proflight_radiopanel_raw_event(driver_data->data.radiopanel, hdev, report, data, size);
                 break;
         }
-        up_write(driver_data->lock);
+        SAITEK_UNLOCK_WRITE(driver_data->lock);
 
         return ret_val;
 }
