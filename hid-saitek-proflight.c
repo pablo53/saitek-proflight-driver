@@ -569,24 +569,51 @@ static int saitek_proflight_multipanel_raw_event(
         if (size < 3)
                 return -1; // We expect 3 bytes
         
+#define SAITEK_ADJUST_COUNTED_BTN(btn,byteno,mask) \
+        if (CHECK(data[byteno] & mask)) { \
+                if (!multipanel->btn) { \
+                        if (multipanel->a ## btn < SAITEK_MAX_BTN) \
+                                multipanel->a ## btn++; \
+                        multipanel->btn = 1; \
+                } \
+        } else { \
+                multipanel->btn = 0; \
+        }
+
+#define SAITEK_ADJUST_COUNTED_ENCDR(btn,up,bytenoup,maskup,valmax,down,bytenodown,maskdown,valmin) \
+        if (CHECK(data[bytenoup] & maskup)) { \
+                if (!multipanel->btn ## _ ## up) { \
+                        if (multipanel->btn < (valmax)) \
+                                multipanel->btn++; \
+                        multipanel->btn ## _ ## up = 1; \
+                } \
+        } else { \
+                multipanel->btn ## _ ## up = 0; \
+        } \
+        if (CHECK(data[bytenodown] & maskdown)) { \
+                if (!multipanel->btn ## _ ## down) \
+                        if (multipanel->btn > (valmin)) \
+                                multipanel->btn--; \
+                        multipanel->btn ## _ ## down = 1; \
+        } else { \
+                multipanel->btn ## _ ## down = 0; \
+        }
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverflow"
-        multipanel->hdg             = CHECK(data[1] & 0x01);
-        multipanel->nav             = CHECK(data[1] & 0x02);
-        multipanel->ias             = CHECK(data[1] & 0x04);
-        multipanel->alt             = CHECK(data[1] & 0x08);
-        multipanel->vs              = CHECK(data[1] & 0x10);
-        multipanel->apr             = CHECK(data[1] & 0x20);
-        multipanel->rev             = CHECK(data[1] & 0x40);
-        multipanel->ap              = CHECK(data[0] & 0x80); // unnecessary GCC warning on overflow in conversion here
-        multipanel->flaps_up        = CHECK(data[2] & 0x01);
-        multipanel->flaps_down      = CHECK(data[2] & 0x02);
-        multipanel->auto_throttle   = CHECK(data[1] & 0x80); // unnecessary GCC warning on overflow in conversion here
-        multipanel->pitch_trim_up   = CHECK(data[2] & 0x08);
-        multipanel->pitch_trim_down = CHECK(data[2] & 0x04);
-        multipanel->knob_right      = CHECK(data[0] & 0x20);
-        multipanel->knob_left       = CHECK(data[0] & 0x40);
-#pragma GCC diagnostic pop
+        // TODO: some kind of a software debouncer
+        SAITEK_ADJUST_COUNTED_BTN(hdg, 1, 0x01);
+        SAITEK_ADJUST_COUNTED_BTN(nav, 1, 0x02);
+        SAITEK_ADJUST_COUNTED_BTN(ias, 1, 0x04);
+        SAITEK_ADJUST_COUNTED_BTN(alt, 1, 0x08);
+        SAITEK_ADJUST_COUNTED_BTN(vs,  1, 0x10);
+        SAITEK_ADJUST_COUNTED_BTN(apr, 1, 0x20);
+        SAITEK_ADJUST_COUNTED_BTN(rev, 1, 0x40);
+        SAITEK_ADJUST_COUNTED_BTN(ap,  0, 0x80); // unnecessary GCC warning on overflow in conversion here
+        SAITEK_ADJUST_COUNTED_ENCDR(flaps,up,2,0x01,SAITEK_MAX_FLAPS,down,2,0x02,SAITEK_MIN_FLAPS);
+        multipanel->auto_throttle = CHECK(data[1] & 0x80); // unnecessary GCC warning on overflow in conversion here
+        SAITEK_ADJUST_COUNTED_ENCDR(pitch_trim,up,2,0x08,SAITEK_MAX_PITCH_TRIM,down,2,0x04,SAITEK_MIN_PITCH_TRIM);
+        SAITEK_ADJUST_COUNTED_ENCDR(knob,right,0,0x20,SAITEK_MAX_KNOB,left,0,0x40,SAITEK_MIN_KNOB);
         if (data[0] & 0x01)
                 multipanel->mode = MULTIPANEL_MODE_ALT;
         else if (data[0] & 0x02)
@@ -599,36 +626,10 @@ static int saitek_proflight_multipanel_raw_event(
                 multipanel->mode = MULTIPANEL_MODE_CRS;
         else
                 multipanel->mode = 0; // should never occur
+#pragma GCC diagnostic pop
         
-        // TODO: some kind of a software debouncer
-        if (multipanel->hdg && multipanel->ahdg < SAITEK_MAX_BTN)
-                multipanel->ahdg++;
-        if (multipanel->nav && multipanel->anav < SAITEK_MAX_BTN)
-                multipanel->anav++;
-        if (multipanel->ias && multipanel->aias < SAITEK_MAX_BTN)
-                multipanel->aias++;
-        if (multipanel->alt && multipanel->aalt < SAITEK_MAX_BTN)
-                multipanel->aalt++;
-        if (multipanel->vs && multipanel->avs < SAITEK_MAX_BTN)
-                multipanel->avs++;
-        if (multipanel->apr && multipanel->aapr < SAITEK_MAX_BTN)
-                multipanel->aapr++;
-        if (multipanel->rev && multipanel->arev < SAITEK_MAX_BTN)
-                multipanel->arev++;
-        if (multipanel->ap && multipanel->aap < SAITEK_MAX_BTN)
-                multipanel->aap++;
-        if (multipanel->flaps_up && multipanel->flaps < SAITEK_MAX_FLAPS)
-                multipanel->flaps++;
-        else if (multipanel->flaps_down && multipanel->flaps > SAITEK_MIN_FLAPS)
-                multipanel->flaps--;
-        if (multipanel->pitch_trim_up && multipanel->pitch_trim < SAITEK_MAX_PITCH_TRIM)
-                multipanel->pitch_trim++;
-        else if (multipanel->pitch_trim_down && multipanel->pitch_trim > SAITEK_MIN_PITCH_TRIM)
-                multipanel->pitch_trim--;
-        if (multipanel->knob_right && multipanel->knob < SAITEK_MAX_KNOB)
-                multipanel->knob++;
-        else if (multipanel->knob_left && multipanel->knob > SAITEK_MIN_KNOB)
-                multipanel->knob--;
+#undef SAITEK_ADJUST_COUNTED_LEVER
+#undef SAITEK_ADJUST_COUNTED_BTN
 
         return 1;
 }
