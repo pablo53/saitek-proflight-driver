@@ -96,12 +96,28 @@
 
 struct proflight_radiopanel {
         struct proflight *parent;
-        unsigned int act_stby1 : 1;
-        unsigned int act_stby2 : 1;
+        unsigned int actstby0 : 1;
+        unsigned int actstby1 : 1;
+        unsigned int innerknob0_right : 1;
+        unsigned int innerknob0_left : 1;
+        unsigned int outerknob0_right : 1;
+        unsigned int outerknob0_left : 1;
+        unsigned int innerknob1_right : 1;
+        unsigned int innerknob1_left : 1;
+        unsigned int outerknob1_right : 1;
+        unsigned int outerknob1_left : 1;
+        int mode0;
         int mode1;
-        int mode2;
-        int knob1;
-        int knob2;
+        int aactstby0; // accumulated
+        int aactstby1; // accumulated
+        int innerknob0; // accumulated movement (left - decreases, right - increases)
+        int outerknob0; // accumulated movement (left - decreases, right - increases)
+        int innerknob1; // accumulated movement (left - decreases, right - increases)
+        int outerknob1; // accumulated movement (left - decreases, right - increases)
+        char display0l[5];
+        char display0r[5];
+        char display1l[5];
+        char display1r[5];
 };
 
 struct proflight_multipanel {
@@ -201,8 +217,20 @@ static void saitek_format_multipanel_display(char *msg, const char *display, siz
 
 static int saitek_buf_format_radiopanel(char *buf, struct proflight_radiopanel *radiopanel)
 {
-        // TODO
-        return 0;
+        int len;
+
+        len = snprintf(buf, MAX_BUFFER, "[RP] "
+                        "%c %1.1d %3.2d %3.2d %4.4s "
+                        "%c %1.1d %3.2d %3.2d %4.4s",
+                        radiopanel->actstby0 ? '1' : '0', radiopanel->aactstby0,
+                        radiopanel->innerknob0, radiopanel->outerknob0,
+                        RADIOPANEL_MODE(radiopanel->mode0),
+                        radiopanel->actstby1 ? '1' : '0', radiopanel->aactstby1,
+                        radiopanel->innerknob1, radiopanel->outerknob1,
+                        RADIOPANEL_MODE(radiopanel->mode1)
+        );
+
+        return len;
 }
 
 static int saitek_buf_format_multipanel(char *buf, struct proflight_multipanel *multipanel)
@@ -628,7 +656,7 @@ static int saitek_proflight_multipanel_raw_event(
                 multipanel->mode = 0; // should never occur
 #pragma GCC diagnostic pop
         
-#undef SAITEK_ADJUST_COUNTED_LEVER
+#undef SAITEK_ADJUST_COUNTED_ENCDR
 #undef SAITEK_ADJUST_COUNTED_BTN
 
         return 1;
@@ -639,6 +667,90 @@ static int saitek_proflight_radiopanel_raw_event(
                 struct hid_device *hdev, struct hid_report *report, u8 *data,
                 int size)
 {
+        if (report->id != 0 || report->type != 0) {
+                hid_warn(hdev, "Unknown Saitek Pro Flight Radio Panel HID report"
+                                " (ID=%i TYPE=%i).", report->id, report->type);
+                return 0; // process the default way
+        }
+        if (size < 3)
+                return -1; // we expect 3 bytes
+
+#define SAITEK_ADJUST_COUNTED_BTN(btn,byteno,mask) \
+        if (CHECK(data[byteno] & mask)) { \
+                if (!radiopanel->btn) { \
+                        if (radiopanel->a ## btn < SAITEK_MAX_BTN) \
+                                radiopanel->a ## btn++; \
+                        radiopanel->btn = 1; \
+                } \
+        } else { \
+                radiopanel->btn = 0; \
+        }
+
+#define SAITEK_ADJUST_COUNTED_ENCDR(btn,up,bytenoup,maskup,valmax,down,bytenodown,maskdown,valmin) \
+        if (CHECK(data[bytenoup] & maskup)) { \
+                if (!radiopanel->btn ## _ ## up) { \
+                        if (radiopanel->btn < (valmax)) \
+                                radiopanel->btn++; \
+                        radiopanel->btn ## _ ## up = 1; \
+                } \
+        } else { \
+                radiopanel->btn ## _ ## up = 0; \
+        } \
+        if (CHECK(data[bytenodown] & maskdown)) { \
+                if (!radiopanel->btn ## _ ## down) \
+                        if (radiopanel->btn > (valmin)) \
+                                radiopanel->btn--; \
+                        radiopanel->btn ## _ ## down = 1; \
+        } else { \
+                radiopanel->btn ## _ ## down = 0; \
+        }
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Woverflow"
+
+        SAITEK_ADJUST_COUNTED_BTN(actstby0, 1, 0x40);
+        SAITEK_ADJUST_COUNTED_BTN(actstby1, 1, 0x80);
+        SAITEK_ADJUST_COUNTED_ENCDR(innerknob0,right,2,0x01,SAITEK_MAX_KNOB,left,2,0x02,SAITEK_MIN_KNOB);
+        SAITEK_ADJUST_COUNTED_ENCDR(outerknob0,right,2,0x04,SAITEK_MAX_KNOB,left,2,0x08,SAITEK_MIN_KNOB);
+        SAITEK_ADJUST_COUNTED_ENCDR(innerknob1,right,2,0x10,SAITEK_MAX_KNOB,left,2,0x20,SAITEK_MIN_KNOB);
+        SAITEK_ADJUST_COUNTED_ENCDR(outerknob1,right,2,0x40,SAITEK_MAX_KNOB,left,2,0x80,SAITEK_MIN_KNOB);
+        if (data[0] & 0x01)
+                radiopanel->mode0 = RADIOPANEL_MODE_COM1;
+        else if (data[0] & 0x02)
+                radiopanel->mode0 = RADIOPANEL_MODE_COM2;
+        else if (data[0] & 0x04)
+                radiopanel->mode0 = RADIOPANEL_MODE_NAV1;
+        else if (data[0] & 0x08)
+                radiopanel->mode0 = RADIOPANEL_MODE_NAV2;
+        else if (data[0] & 0x10)
+                radiopanel->mode0 = RADIOPANEL_MODE_ADF;
+        else if (data[0] & 0x20)
+                radiopanel->mode0 = RADIOPANEL_MODE_DME;
+        else if (data[0] & 0x40)
+                radiopanel->mode0 = RADIOPANEL_MODE_XPDR;
+        else
+                radiopanel->mode0 = 0; // should never occur
+        if (data[0] & 0x80)
+                radiopanel->mode1 = RADIOPANEL_MODE_COM1;
+        else if (data[1] & 0x01)
+                radiopanel->mode1 = RADIOPANEL_MODE_COM2;
+        else if (data[1] & 0x02)
+                radiopanel->mode1 = RADIOPANEL_MODE_NAV1;
+        else if (data[1] & 0x04)
+                radiopanel->mode1 = RADIOPANEL_MODE_NAV2;
+        else if (data[1] & 0x08)
+                radiopanel->mode1 = RADIOPANEL_MODE_ADF;
+        else if (data[1] & 0x10)
+                radiopanel->mode1 = RADIOPANEL_MODE_DME;
+        else if (data[1] & 0x20)
+                radiopanel->mode1 = RADIOPANEL_MODE_XPDR;
+        else
+                radiopanel->mode1 = 0; // should never occur
+
+#pragma GCC diagnostic pop
+
+#undef SAITEK_ADJUST_COUNTED_ENCDR
+#undef SAITEK_ADJUST_COUNTED_BTN
 
         return 1;
 }
