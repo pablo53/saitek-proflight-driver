@@ -50,7 +50,15 @@
                 ((x) == RADIOPANEL_MODE_ADF) ? "ADF " : \
                 ((x) == RADIOPANEL_MODE_DME) ? "DME " : \
                 ((x) == RADIOPANEL_MODE_XPDR) ? "XPDR" : \
-                "   ")
+                "    ")
+
+#define SWITCHPANEL_MODE(x) ( \
+                ((x) == SWITCHPANEL_MODE_START) ? "START" : \
+                ((x) == SWITCHPANEL_MODE_BOTH)  ? "BOTH " : \
+                ((x) == SWITCHPANEL_MODE_LEFT)  ? "LEFT " : \
+                ((x) == SWITCHPANEL_MODE_RIGHT) ? "RIGHT" : \
+                ((x) == SWITCHPANEL_MODE_OFF)   ? "OFF  " : \
+                "     ")
 
 #define PANEL_DIGIT_MINUS ((char)0x0e)
 #define PANEL_DIGIT_DOT   ((char)0xd0)
@@ -75,6 +83,9 @@
 #ifndef USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL
 #  define USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL 0x0d06
 #endif
+#ifndef USB_DEVICE_ID_SAITEK_PROFLIGHT_SWITCHPANEL
+#  define USB_DEVICE_ID_SAITEK_PROFLIGHT_SWITCHPANEL 0x0d67
+#endif
 
 #define MAX_BUFFER PAGE_SIZE
 #define SAITEK_HID_BUF_LEN 13
@@ -92,6 +103,12 @@
 #define MULTIPANEL_MODE_IAS 3
 #define MULTIPANEL_MODE_HDG 4
 #define MULTIPANEL_MODE_CRS 5
+
+#define SWITCHPANEL_MODE_START 5
+#define SWITCHPANEL_MODE_BOTH  4
+#define SWITCHPANEL_MODE_LEFT  3
+#define SWITCHPANEL_MODE_RIGHT 2
+#define SWITCHPANEL_MODE_OFF   1
 
 #define SAITEK_MAX_BTN 9
 
@@ -169,10 +186,34 @@ struct proflight_multipanel {
         unsigned int led_ap : 1;
 };
 
+struct proflight_switchpanel {
+        struct proflight *parent;
+        unsigned int master_bat : 1;
+        unsigned int master_alt : 1;
+        unsigned int avionics : 1;
+        unsigned int fuel_pump : 1;
+        unsigned int de_ice : 1;
+        unsigned int pitot_heat : 1;
+        unsigned int cowl : 1;
+        unsigned int panel : 1;
+        unsigned int beacon : 1;
+        unsigned int nav : 1;
+        unsigned int strobe : 1;
+        unsigned int taxi : 1;
+        unsigned int landing : 1;
+        unsigned int gear_up : 1;
+        unsigned int gear_down : 1;
+        int mode; // as per SWITCH_MODE_*
+        char led_n; // 'R' = Red, 'G' = Green, 'Y' = Red+Green, '\000' = Turned off (Black)
+        char led_l; // 'R' = Red, 'G' = Green, 'Y' = Red+Green, '\000' = Turned off (Black)
+        char led_r; // 'R' = Red, 'G' = Green, 'Y' = Red+Green, '\000' = Turned off (Black)
+};
+
 union proflight_panel_data
 {
         struct proflight_radiopanel *radiopanel;
         struct proflight_multipanel *multipanel;
+        struct proflight_switchpanel *switchpanel;
 };
 
 struct proflight {
@@ -388,6 +429,34 @@ static int saitek_buf_format_multipanel(char *buf, struct proflight_multipanel *
         return len;
 }
 
+static int saitek_buf_format_switchpanel(char *buf, struct proflight_switchpanel *switchpanel)
+{
+        int len;
+
+        len = snprintf(buf, MAX_BUFFER,
+                        "[MP] %c%c%c %5.5s %c%c%c%c%c%c%c%c%c%c%c%c%c %c",
+                        switchpanel->led_n ? switchpanel->led_n : '-',
+                        switchpanel->led_l ? switchpanel->led_l : '-',
+                        switchpanel->led_r ? switchpanel->led_r : '-',
+                        SWITCHPANEL_MODE(switchpanel->mode),
+                        switchpanel->master_bat ? '1' : '0',
+                        switchpanel->master_alt ? '1' : '0',
+                        switchpanel->avionics   ? '1' : '0',
+                        switchpanel->fuel_pump  ? '1' : '0',
+                        switchpanel->de_ice     ? '1' : '0',
+                        switchpanel->pitot_heat ? '1' : '0',
+                        switchpanel->cowl       ? '1' : '0',
+                        switchpanel->panel      ? '1' : '0',
+                        switchpanel->beacon     ? '1' : '0',
+                        switchpanel->nav        ? '1' : '0',
+                        switchpanel->strobe     ? '1' : '0',
+                        switchpanel->taxi       ? '1' : '0',
+                        switchpanel->landing    ? '1' : '0',
+                        switchpanel->gear_up ? 'U' : switchpanel->gear_down ? 'D' : ' ');
+        
+        return len;
+}
+
 static int saitek_set_radiopanel(struct proflight_radiopanel *radiopanel)
 {
         int res = 0;
@@ -490,6 +559,57 @@ static void saitek_buf_parse_multipanel(struct proflight_multipanel *multipanel,
         }
 }
 
+static int saitek_set_switchpanel(struct proflight_switchpanel *switchpanel)
+{
+        int res = 0;
+
+        switchpanel->parent->dmabuf[0] = 0; // also: report id
+        switchpanel->parent->dmabuf[1] = (
+                        (switchpanel->led_n == '\000') ? 0x00 :
+                        (switchpanel->led_n == 'G') ? 0x01 :
+                        (switchpanel->led_n == 'R') ? 0x08 :
+                        (switchpanel->led_n == 'Y') ? 0x09 : 0x00) | (
+                        (switchpanel->led_l == '\000') ? 0x00 :
+                        (switchpanel->led_l == 'G') ? 0x02 :
+                        (switchpanel->led_l == 'R') ? 0x10 :
+                        (switchpanel->led_l == 'Y') ? 0x12 : 0x00) | (
+                        (switchpanel->led_r == '\000') ? 0x00 :
+                        (switchpanel->led_r == 'G') ? 0x04 :
+                        (switchpanel->led_r == 'R') ? 0x20 :
+                        (switchpanel->led_r == 'Y') ? 0x24 : 0x00);
+                        
+        res = hid_hw_raw_request(switchpanel->parent->hdev,
+                        switchpanel->parent->dmabuf[0], switchpanel->parent->dmabuf,
+                        2, HID_FEATURE_REPORT, HID_REQ_SET_REPORT);
+        
+        return res;
+}
+
+static void saitek_buf_parse_switchpanel(struct proflight_switchpanel *switchpanel,
+                const char *buf, size_t count)
+{
+        if (count < 3) {
+                hid_err(switchpanel->parent->hdev,
+                                "Saitek ProFlight Switch Panel state ('%.*s') too short (%li).\n",
+                                (int)count, buf, count);
+                return;
+        } else if (count > 3) {
+                hid_warn(switchpanel->parent->hdev,
+                                "Saitek ProFlight Switch Panel state ('%.*s') too long (%li).\n",
+                                (int)count, buf, count);
+        }
+
+#define SET_IF_CHAR_COLOR(variable,value) \
+        if ((value) == 'G' || (value) == 'R' || (value) == 'Y' || (value) == '-') \
+                variable = ((value) != '-') ? (value) : '\000';
+        
+        SET_IF_CHAR_COLOR(switchpanel->led_n,buf[0]);
+        SET_IF_CHAR_COLOR(switchpanel->led_l,buf[1]);
+        SET_IF_CHAR_COLOR(switchpanel->led_r,buf[2]);
+
+#undef SET_IF_CHAR_COLOR
+}
+
 static ssize_t saitek_proflight_show(struct device *dev,
                 struct device_attribute *attr, char *buf)
 {
@@ -511,6 +631,10 @@ static ssize_t saitek_proflight_show(struct device *dev,
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
                 ret_val = saitek_buf_format_multipanel(buf,
                                 driver_data->data.multipanel);
+                break;
+        case USB_DEVICE_ID_SAITEK_PROFLIGHT_SWITCHPANEL:
+                ret_val = saitek_buf_format_switchpanel(buf,
+                                driver_data->data.switchpanel);
                 break;
         default:
                 ret_val = -ENXIO;
@@ -554,6 +678,14 @@ static ssize_t saitek_proflight_store(struct device *dev,
                 else
                         ret_val = count; // informing the caller that we consumed the whole buffer
                 break;
+        case USB_DEVICE_ID_SAITEK_PROFLIGHT_SWITCHPANEL:
+                saitek_buf_parse_switchpanel(driver_data->data.switchpanel, buf, true_count);
+                ret_val = saitek_set_switchpanel(driver_data->data.switchpanel);
+                if (ret_val < 0)
+                        printk(KERN_ERR "Error setting Saitek ProFlight Switch Panel: %ld.\n", ret_val);
+                else
+                        ret_val = count; // informing the caller that we consumed the whole buffer
+                break;
         default:
                 ret_val = -ENXIO;
         }
@@ -587,6 +719,13 @@ static int saitek_proflight_alloc_panel_data(
                         return -ENOMEM;
                 }
                 break;
+        case USB_DEVICE_ID_SAITEK_PROFLIGHT_SWITCHPANEL:
+                panel_data.switchpanel = devm_kzalloc(&hdev->dev, sizeof(struct proflight_switchpanel), GFP_KERNEL);
+                if (!panel_data.switchpanel) {
+                        hid_err(hdev, "No memory for Saitek ProFlight Switch Panel data.\n");
+                        return -ENOMEM;
+                }
+                break;
         }
         *driver_data_p = devm_kzalloc(&hdev->dev, sizeof(struct proflight), GFP_KERNEL);
         if (!(*driver_data_p)) {
@@ -599,6 +738,9 @@ static int saitek_proflight_alloc_panel_data(
                 break;
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
                 panel_data.multipanel->parent = *driver_data_p;
+                break;
+        case USB_DEVICE_ID_SAITEK_PROFLIGHT_SWITCHPANEL:
+                panel_data.switchpanel->parent = *driver_data_p;
                 break;
         }
 
@@ -868,6 +1010,55 @@ static int saitek_proflight_radiopanel_raw_event(
         return 1;
 }
 
+static int saitek_proflight_switchpanel_raw_event(
+                struct proflight_switchpanel *switchpanel,
+                struct hid_device *hdev, struct hid_report *report, u8 *data,
+                int size)
+{
+        if (report->id != 0 || report->type != 0) {
+                hid_warn(hdev, "Unknown Saitek Pro Flight Radio Panel HID report"
+                                " (ID=%i TYPE=%i).", report->id, report->type);
+                return 0; // process the default way
+        }
+        if (size < 3)
+                return -1; // we expect 3 bytes
+        
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Woverflow"
+
+        switchpanel->master_bat = (data[0] & 0x01) ? 1 : 0;
+        switchpanel->master_alt = (data[0] & 0x02) ? 1 : 0;
+        switchpanel->avionics   = (data[0] & 0x04) ? 1 : 0;
+        switchpanel->fuel_pump  = (data[0] & 0x08) ? 1 : 0;
+        switchpanel->de_ice     = (data[0] & 0x10) ? 1 : 0;
+        switchpanel->pitot_heat = (data[0] & 0x20) ? 1 : 0;
+        switchpanel->cowl       = (data[0] & 0x40) ? 1 : 0;
+        switchpanel->panel      = (data[0] & 0x80) ? 1 : 0;
+        switchpanel->beacon     = (data[1] & 0x01) ? 1 : 0;
+        switchpanel->nav        = (data[1] & 0x02) ? 1 : 0;
+        switchpanel->strobe     = (data[1] & 0x04) ? 1 : 0;
+        switchpanel->taxi       = (data[1] & 0x08) ? 1 : 0;
+        switchpanel->landing    = (data[1] & 0x10) ? 1 : 0;
+        switchpanel->gear_up    = (data[2] & 0x04) ? 1 : 0;
+        switchpanel->gear_down  = (data[2] & 0x08) ? 1 : 0;
+        if (data[2] & 0x02)
+                switchpanel->mode = SWITCHPANEL_MODE_START;
+        else if (data[2] & 0x01)
+                switchpanel->mode = SWITCHPANEL_MODE_BOTH;
+        else if (data[1] & 0x80)
+                switchpanel->mode = SWITCHPANEL_MODE_LEFT;
+        else if (data[1] & 0x40)
+                switchpanel->mode = SWITCHPANEL_MODE_RIGHT;
+        else if (data[1] & 0x20)
+                switchpanel->mode = SWITCHPANEL_MODE_OFF;
+        else
+                switchpanel->mode = 0; // should never occur
+
+#pragma GCC diagnostic pop
+
+        return 1;
+}
+
 static int saitek_proflight_raw_event(struct hid_device *hdev, struct hid_report *report, u8 *data, int size)
 {
         struct proflight *driver_data;
@@ -879,11 +1070,14 @@ static int saitek_proflight_raw_event(struct hid_device *hdev, struct hid_report
         
         SAITEK_LOCK_WRITE(driver_data->lock);
         switch (driver_data->product_id) {
+        case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
+                ret_val = saitek_proflight_radiopanel_raw_event(driver_data->data.radiopanel, hdev, report, data, size);
+                break;
         case USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL:
                 ret_val = saitek_proflight_multipanel_raw_event(driver_data->data.multipanel, hdev, report, data, size);
                 break;
-        case USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL:
-                ret_val = saitek_proflight_radiopanel_raw_event(driver_data->data.radiopanel, hdev, report, data, size);
+        case USB_DEVICE_ID_SAITEK_PROFLIGHT_SWITCHPANEL:
+                ret_val = saitek_proflight_switchpanel_raw_event(driver_data->data.switchpanel, hdev, report, data, size);
                 break;
         }
         SAITEK_UNLOCK_WRITE(driver_data->lock);
@@ -899,6 +1093,7 @@ static int saitek_proflight_event(struct hid_device *hdev, struct hid_field *fie
 static const struct hid_device_id saitek_proflight_devices[] = {
         { HID_USB_DEVICE(USB_VENDOR_ID_SAITEK, USB_DEVICE_ID_SAITEK_PROFLIGHT_RADIOPANEL) },
         { HID_USB_DEVICE(USB_VENDOR_ID_SAITEK, USB_DEVICE_ID_SAITEK_PROFLIGHT_MULTIPANEL) },
+        { HID_USB_DEVICE(USB_VENDOR_ID_SAITEK, USB_DEVICE_ID_SAITEK_PROFLIGHT_SWITCHPANEL) },
         { }
 };
 
